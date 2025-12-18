@@ -1,0 +1,76 @@
+# sqlite-tui configuration
+name: "My Database Studio"
+
+# Server configuration
+server:
+  ssh:
+    enabled: true
+    listen: ":2222"
+    host_key_path: ".sqlite-tui/host_key"
+    idle_timeout: "30m"
+    max_timeout: "24h"
+  
+  # Local mode (no SSH, direct terminal)
+  local:
+    enabled: true
+
+# Database sources
+# Supports: file paths, directories, globs
+# Real-time discovery via fsnotify
+databases:
+  # Single file with alias
+  # - path: "/data/production.db"
+  #   alias: "prod"
+  #   description: "Production database"
+  
+  # Glob pattern - discovers matching files
+  # - path: "/data/dev/*.db"
+  #   description: "Development databases"
+  
+  # Directory - all .db files inside
+  # - path: "/data/analytics/"
+  #   recursive: true
+  #   description: "Analytics databases"
+  
+  # Multiple extensions
+  # - path: "/data/legacy/*.{db,sqlite,sqlite3}"
+  #   description: "Legacy databases"
+
+  # Example: current directory
+  - path: "./*.db"
+    description: "Local databases"
+
+# Anonymous access (unauthenticated users)
+# Options: none, read-only, read-write
+anonymous_access: "none"
+
+# Allow connections without SSH key (keyboard-interactive)
+allow_keyless: false
+
+# Users and access rules
+users:
+  # Admin user - full access to everything
+  # - name: admin
+  #   admin: true
+  #   public_keys:
+  #     - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI... admin@example.com"
+
+  # Developer with mixed access
+  # - name: developer
+  #   public_keys:
+  #     - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI... dev@example.com"
+  #   access:
+  #     - pattern: "prod"              # By alias
+  #       level: "read-only"
+  #     - pattern: "/data/dev/*"       # By path glob
+  #       level: "read-write"
+  #     - pattern: "*"                 # Default fallback
+  #       level: "read-only"
+
+# Public databases (accessible without authentication)
+# Useful for demo/sandbox databases
+public: []
+  # - pattern: "demo.db"
+  #   level: "read-only"
+  # - pattern: "sandbox.db"
+  #   level: "read-write"
