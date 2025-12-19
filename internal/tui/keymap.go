@@ -9,6 +9,10 @@ type KeyMap struct {
 	Down      key.Binding
 	Left      key.Binding
 	Right     key.Binding
+	PageUp    key.Binding
+	PageDown  key.Binding
+	Home      key.Binding
+	End       key.Binding
 	NextPane  key.Binding
 	PrevPane  key.Binding
 	Select    key.Binding
@@ -40,11 +44,27 @@ func DefaultKeyMap() KeyMap {
 		),
 		Left: key.NewBinding(
 			key.WithKeys("left", "h"),
-			key.WithHelp("←/h", "left pane"),
+			key.WithHelp("←/h", "left/scroll cols"),
 		),
 		Right: key.NewBinding(
 			key.WithKeys("right", "l"),
-			key.WithHelp("→/l", "right pane"),
+			key.WithHelp("→/l", "right/scroll cols"),
+		),
+		PageUp: key.NewBinding(
+			key.WithKeys("pgup", "ctrl+u"),
+			key.WithHelp("PgUp/^U", "page up"),
+		),
+		PageDown: key.NewBinding(
+			key.WithKeys("pgdown", "ctrl+d"),
+			key.WithHelp("PgDn/^D", "page down"),
+		),
+		Home: key.NewBinding(
+			key.WithKeys("home", "g"),
+			key.WithHelp("Home/g", "go to top"),
+		),
+		End: key.NewBinding(
+			key.WithKeys("end", "G"),
+			key.WithHelp("End/G", "go to bottom"),
 		),
 		NextPane: key.NewBinding(
 			key.WithKeys("tab"),

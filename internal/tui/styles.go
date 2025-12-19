@@ -137,3 +137,10 @@ var titleStyle = lipgloss.NewStyle().
 	Foreground(primaryColor).
 	MarginBottom(1)
 
+// Modal style for overlays (help, schema)
+var modalStyle = lipgloss.NewStyle().
+	Border(lipgloss.RoundedBorder()).
+	BorderForeground(primaryColor).
+	Padding(1, 2).
+	Background(bgColor)
+
