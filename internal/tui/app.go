@@ -292,6 +292,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.loadedOffset = 0
 			a.selectedRow = 0
 			a.updateDataTable()
+			a.updateTableHeight()
 		}
 		return a, nil
 
@@ -303,6 +304,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.dataRows = append(a.dataRows, msg.Result.Rows...)
 			a.loadedOffset = msg.Offset
 			a.updateDataTable()
+			a.updateTableHeight()
 		}
 		return a, nil
 
@@ -317,6 +319,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.totalRows = int64(len(msg.Result.Rows))
 			a.selectedRow = 0
 			a.updateDataTable()
+			a.updateTableHeight()
 		}
 		return a, nil
 
@@ -338,6 +341,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.editError = nil
 			a.updateDataTable()
 		}
+		a.updateTableHeight()
 		return a, nil
 	}
 
@@ -360,8 +364,91 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return a, tea.Batch(cmds...)
 }
 
+// updateTableHeight recalculates and updates the table height based on current indicators
+func (a *App) updateTableHeight() {
+	contentHeight := a.height - 5 // header (3 lines: title + 2 newlines) + query (1) + status (1)
+
+	// Calculate indicators that come BEFORE the table (affect table height)
+	indicatorsBeforeTable := 0
+
+	// Column scroll indicator (rendered before table)
+	totalCols := len(a.dataColumns)
+	endCol := a.colOffset + a.visibleCols
+	if endCol > totalCols {
+		endCol = totalCols
+	}
+	if a.colOffset > 0 || endCol < totalCols {
+		indicatorsBeforeTable++
+	}
+
+	// Edit mode indicator (rendered before table)
+	if a.editingCell || a.editError != nil {
+		indicatorsBeforeTable++
+	}
+
+	// Calculate maximum available height for table
+	// Account for indicators BEFORE table, and reserve 1 line for "rows below" indicator if needed
+	// We'll calculate if we need the indicator, then adjust table height accordingly
+	maxTableHeight := contentHeight - 2 - indicatorsBeforeTable
+	if maxTableHeight < 1 {
+		maxTableHeight = 1
+	}
+
+	// First, check if we need "rows below" indicator using maximum table height
+	dataRowsAvailable := maxTableHeight - 1 // subtract header row
+	scrollOffset := a.selectedRow - dataRowsAvailable + 1
+	if scrollOffset < 0 {
+		scrollOffset = 0
+	}
+	lastVisible := scrollOffset + dataRowsAvailable - 1
+	if lastVisible >= len(a.dataRows) {
+		lastVisible = len(a.dataRows) - 1
+	}
+	// When selectedRow is the last loaded row, lastVisible should be selectedRow
+	if a.selectedRow == len(a.dataRows)-1 && len(a.dataRows) > 0 {
+		lastVisible = a.selectedRow
+	}
+
+	// Calculate if we need to show "rows below" indicator
+	maxLoadedRowIndex := int64(len(a.dataRows) - 1)
+	showRowsBelowIndicator := false
+	if int64(len(a.dataRows)) < a.totalRows {
+		// Not all rows loaded - check against totalRows
+		rowsBelow := a.totalRows - int64(lastVisible) - 1
+		if rowsBelow > 0 {
+			showRowsBelowIndicator = true
+		}
+	} else {
+		// All rows loaded - only show indicator if we can't see the last row
+		if int64(lastVisible) < maxLoadedRowIndex {
+			if int64(a.selectedRow) < maxLoadedRowIndex {
+				showRowsBelowIndicator = true
+			}
+		}
+	}
+
+	// Set table height: reduce by 1 if we need to show the indicator
+	tableHeight := maxTableHeight
+	if showRowsBelowIndicator {
+		tableHeight--
+		if tableHeight < 1 {
+			tableHeight = 1
+		}
+	}
+
+	a.dataTable.SetHeight(tableHeight)
+	a.tableDataRows = tableHeight - 1
+}
+
+// calculateTableHeight calculates the available height for the table based on indicators
+// This is used for initial sizing in updateSizes
+func (a *App) calculateTableHeight(contentHeight int) int {
+	// Use a conservative estimate - will be refined by updateTableHeight
+	return contentHeight - 2 - 2 // borders + 2 for potential indicators
+}
+
 func (a *App) updateSizes() {
-	contentHeight := a.height - 7 // header + status + query
+	contentHeight := a.height - 5 // header (3 lines: title + 2 newlines) + query (1) + status (1)
 	listWidth := a.width / 5
 	if listWidth < 15 {
 		listWidth = 15
@@ -371,14 +458,14 @@ func (a *App) updateSizes() {
 	a.dbList.SetSize(listWidth, contentHeight)
 	a.tableList.SetSize(listWidth, contentHeight)
 
-	// Table height: contentHeight - borders(2) - header row(1) - padding(2)
-	tableHeight := contentHeight - 5
-	if tableHeight < 1 {
-		tableHeight = 1
-	}
+	// Calculate table height accounting for indicators
+	tableHeight := a.calculateTableHeight(contentHeight)
 	a.dataTable.SetHeight(tableHeight)
 	a.tableDataRows = tableHeight - 1   // subtract header row
 	a.dataTable.SetWidth(dataWidth - 4) // account for pane padding
+
+	// Update to accurate height based on current state
+	a.updateTableHeight()
 
 	// Calculate how many columns fit in viewport
 	// Each column uses: colWidth + 1 (gap between columns)
@@ -438,25 +525,45 @@ func (a *App) updateDataTable() {
 		}
 	}
 
-	// Calculate available width for visible columns
+	// Calculate available width for the dataview
 	dataWidth := a.width - (a.width/5)*2 - 10
-	// bubbles/table adds 1 char padding on each side of cell content
-	// plus 1 char gap between columns
-	// So effective width per column = colWidth + 3
-	availableForContent := dataWidth - (visibleColCount * 3)
-	colWidth := availableForContent / visibleColCount
+	maxColWidth := dataWidth // max width per column is the full dataview width
 
-	// Enforce reasonable bounds
-	if colWidth < 8 {
-		colWidth = 8
-	}
-	if colWidth > 25 {
-		colWidth = 25
+	// Calculate content width for each visible column
+	columnWidths := make([]int, visibleColCount)
+	for i := 0; i < visibleColCount; i++ {
+		srcIdx := a.colOffset + i
+
+		// Start with column header width
+		maxWidth := len(a.dataColumns[srcIdx])
+
+		// Check all cell values in this column
+		for _, row := range a.dataRows {
+			if srcIdx < len(row) {
+				cellValue := database.FormatValue(row[srcIdx])
+				if len(cellValue) > maxWidth {
+					maxWidth = len(cellValue)
+				}
+			}
+		}
+
+		// Cap at maxColWidth
+		if maxWidth > maxColWidth {
+			maxWidth = maxColWidth
+		}
+
+		// Minimum width of 1
+		if maxWidth < 1 {
+			maxWidth = 1
+		}
+
+		columnWidths[i] = maxWidth
 	}
 
 	columns := make([]table.Column, visibleColCount)
 	for i := 0; i < visibleColCount; i++ {
 		srcIdx := a.colOffset + i
+		colWidth := columnWidths[i]
 		columns[i] = table.Column{
 			Title: truncateString(a.dataColumns[srcIdx], colWidth-2),
 			Width: colWidth,
@@ -469,6 +576,7 @@ func (a *App) updateDataTable() {
 		for j := 0; j < visibleColCount; j++ {
 			srcIdx := a.colOffset + j
 			if srcIdx < len(row) {
+				colWidth := columnWidths[j]
 				cells[j] = truncateString(database.FormatValue(row[srcIdx]), colWidth-2)
 			} else {
 				cells[j] = ""
@@ -550,6 +658,7 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if a.colOffset > 0 {
 				a.colOffset--
 				a.updateDataTable()
+				a.updateTableHeight()
 			}
 		} else if a.focus > 0 {
 			a.focus--
@@ -563,6 +672,7 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if a.colOffset < len(a.dataColumns)-1 {
 				a.colOffset++
 				a.updateDataTable()
+				a.updateTableHeight()
 			}
 		} else if a.focus < FocusData {
 			a.focus++
@@ -631,6 +741,7 @@ func (a *App) handleUp() (tea.Model, tea.Cmd) {
 		if a.selectedRow > 0 {
 			a.selectedRow--
 			a.dataTable.SetCursor(a.selectedRow)
+			a.updateTableHeight()
 		}
 	}
 	return a, nil
@@ -654,6 +765,7 @@ func (a *App) handleDown() (tea.Model, tea.Cmd) {
 		if a.selectedRow < len(a.dataRows)-1 {
 			a.selectedRow++
 			a.dataTable.SetCursor(a.selectedRow)
+			a.updateTableHeight()
 			// Load more if near end
 			if a.selectedRow >= len(a.dataRows)-5 && int64(len(a.dataRows)) < a.totalRows {
 				return a, a.loadMoreData(len(a.dataRows))
@@ -661,6 +773,8 @@ func (a *App) handleDown() (tea.Model, tea.Cmd) {
 		} else if int64(len(a.dataRows)) < a.totalRows {
 			// At end but more rows exist - load them
 			return a, a.loadMoreData(len(a.dataRows))
+		} else {
+			a.updateTableHeight()
 		}
 	}
 	return a, nil
@@ -687,6 +801,7 @@ func (a *App) handlePageUp() (tea.Model, tea.Cmd) {
 			a.selectedRow = 0
 		}
 		a.dataTable.SetCursor(a.selectedRow)
+		a.updateTableHeight()
 	}
 	return a, nil
 }
@@ -715,6 +830,7 @@ func (a *App) handlePageDown() (tea.Model, tea.Cmd) {
 			a.selectedRow = 0
 		}
 		a.dataTable.SetCursor(a.selectedRow)
+		a.updateTableHeight()
 		// Load more if needed
 		if int64(len(a.dataRows)) < a.totalRows && a.selectedRow >= len(a.dataRows)-5 {
 			return a, a.loadMoreData(len(a.dataRows))
@@ -736,6 +852,7 @@ func (a *App) handleHome() (tea.Model, tea.Cmd) {
 	case FocusData:
 		a.selectedRow = 0
 		a.dataTable.SetCursor(0)
+		a.updateTableHeight()
 	}
 	return a, nil
 }
@@ -765,6 +882,7 @@ func (a *App) handleEnd() (tea.Model, tea.Cmd) {
 			a.selectedRow = 0
 		}
 		a.dataTable.SetCursor(a.selectedRow)
+		a.updateTableHeight()
 	}
 	return a, nil
 }
@@ -906,6 +1024,7 @@ func (a *App) handleEditCell() (tea.Model, tea.Cmd) {
 	a.editCellRow = a.selectedRow
 	a.editCellCol = a.colOffset // start at first visible column
 	a.editError = nil
+	a.updateTableHeight()
 
 	// Get current value
 	if a.editCellCol < len(a.dataRows[a.selectedRow]) {
@@ -1088,7 +1207,7 @@ func (a *App) View() string {
 		listWidth = 15
 	}
 	dataWidth := a.width - listWidth*2 - 6
-	contentHeight := a.height - 7
+	contentHeight := a.height - 5 // header (3 lines: title + 2 newlines) + query (1) + status (1)
 
 	var b strings.Builder
 
@@ -1272,39 +1391,30 @@ func (a *App) renderDataPane(width, height int) string {
 		content.WriteString("\n")
 	}
 
-	// Get table view and truncate to fit
+	// Get table view - the table component handles scrolling internally
 	tableView := a.dataTable.View()
-
-	// Split by lines and limit to available height
-	lines := strings.Split(tableView, "\n")
-	extraLines := 2 // for indicators
-	if a.colOffset > 0 || endCol < totalCols {
-		extraLines++
-	}
-	if a.editingCell || a.editError != nil {
-		extraLines++
-	}
-	maxLines := height - 4 - extraLines
-	if maxLines < 1 {
-		maxLines = 1
-	}
-	if len(lines) > maxLines {
-		lines = lines[:maxLines]
-		tableView = strings.Join(lines, "\n")
-	}
-
 	content.WriteString(tableView)
 
 	// Add indicator for rows below viewport
-	// Estimate scroll offset: table keeps cursor visible, assume cursor near bottom of viewport
+	// The table component keeps the cursor visible, so we need to calculate
+	// the actual last visible row based on the viewport and cursor position
 	scrollOffset := a.selectedRow - a.tableDataRows + 1
 	if scrollOffset < 0 {
 		scrollOffset = 0
 	}
+	// Calculate the last visible row index (0-indexed)
 	lastVisible := scrollOffset + a.tableDataRows - 1
+	// Clamp to available data
 	if lastVisible >= len(a.dataRows) {
 		lastVisible = len(a.dataRows) - 1
 	}
+	// When selectedRow is the last loaded row, lastVisible should be selectedRow
+	// This ensures we don't overestimate what's visible when at the end
+	if a.selectedRow == len(a.dataRows)-1 && len(a.dataRows) > 0 {
+		lastVisible = a.selectedRow
+	}
+	// lastVisible is 0-indexed, convert to 1-indexed for comparison with totalRows
+	// rowsBelow = totalRows - (lastVisible + 1) = totalRows - lastVisible - 1
 	rowsBelow := a.totalRows - int64(lastVisible) - 1
 	if rowsBelow > 0 {
 		indicator := fmt.Sprintf("\n↓ %d more rows", rowsBelow)
@@ -1329,25 +1439,17 @@ func (a *App) renderQueryBar() string {
 }
 
 func (a *App) renderStatusBar() string {
-	var parts []string
+	var essentialParts []string
 
-	// Current database/table
-	if a.selectedDB < len(a.databases) {
-		db := a.databases[a.selectedDB]
-		parts = append(parts, statusKeyStyle.Render(db.Alias))
-	}
-	if a.selectedTable < len(a.tables) {
-		parts = append(parts, statusValueStyle.Render("> "+a.tables[a.selectedTable]))
-	}
-
+	// Build essential parts first (row count, badge, help)
 	// Row count - show actual total
 	if len(a.dataRows) > 0 {
-		parts = append(parts, dimItemStyle.Render(fmt.Sprintf("| row %d/%d", a.selectedRow+1, a.totalRows)))
+		essentialParts = append(essentialParts, dimItemStyle.Render(fmt.Sprintf("| row %d/%d", a.selectedRow+1, a.totalRows)))
 		if int64(len(a.dataRows)) < a.totalRows {
-			parts = append(parts, dimItemStyle.Render(fmt.Sprintf("(loaded %d)", len(a.dataRows))))
+			essentialParts = append(essentialParts, dimItemStyle.Render(fmt.Sprintf("(loaded %d)", len(a.dataRows))))
 		}
 	} else if a.totalRows > 0 {
-		parts = append(parts, dimItemStyle.Render(fmt.Sprintf("| %d rows", a.totalRows)))
+		essentialParts = append(essentialParts, dimItemStyle.Render(fmt.Sprintf("| %d rows", a.totalRows)))
 	}
 
 	// Access level badge
@@ -1364,12 +1466,58 @@ func (a *App) renderStatusBar() string {
 		default:
 			badge = noBadge.Render("NO")
 		}
-		parts = append(parts, badge)
+		essentialParts = append(essentialParts, badge)
 	}
 
-	parts = append(parts, dimItemStyle.Render("| ?:help q:quit"))
+	essentialParts = append(essentialParts, dimItemStyle.Render("| ?:help q:quit"))
 
-	return statusBarStyle.Width(a.width).Render(strings.Join(parts, " "))
+	// Measure width of essential parts (lipgloss.Width strips ANSI codes)
+	essentialText := strings.Join(essentialParts, " ")
+	essentialWidth := lipgloss.Width(essentialText)
+
+	// Calculate available width for db/table names
+	// Account for: padding (2), spaces between parts (~3), and some buffer
+	availableWidth := a.width - essentialWidth - 5
+	if availableWidth < 10 {
+		availableWidth = 10 // minimum for db/table names
+	}
+
+	// Build db/table parts with truncation
+	var dbTableParts []string
+	if a.selectedDB < len(a.databases) {
+		db := a.databases[a.selectedDB]
+		dbAlias := db.Alias
+		maxDbLen := availableWidth / 2
+		if maxDbLen < 5 {
+			maxDbLen = 5
+		}
+		if len(dbAlias) > maxDbLen {
+			dbAlias = truncateString(dbAlias, maxDbLen)
+		}
+		dbTableParts = append(dbTableParts, statusKeyStyle.Render(dbAlias))
+	}
+	if a.selectedTable < len(a.tables) {
+		tableName := a.tables[a.selectedTable]
+		// Reserve space for "> " prefix
+		usedWidth := 0
+		for _, p := range dbTableParts {
+			usedWidth += lipgloss.Width(p) + 1 // +1 for space
+		}
+		maxTableLen := availableWidth - usedWidth - 2 // -2 for "> "
+		if maxTableLen < 3 {
+			maxTableLen = 3
+		}
+		if len(tableName) > maxTableLen {
+			tableName = truncateString(tableName, maxTableLen)
+		}
+		dbTableParts = append(dbTableParts, statusValueStyle.Render("> "+tableName))
+	}
+
+	// Combine all parts
+	allParts := append(dbTableParts, essentialParts...)
+	content := strings.Join(allParts, " ")
+
+	return statusBarStyle.MaxWidth(a.width).Render(content)
 }
 
 func (a *App) renderHelp() string {
