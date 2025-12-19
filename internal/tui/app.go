@@ -62,6 +62,20 @@ type App struct {
 	loadedOffset int
 	selectedRow  int
 
+	// Column scrolling
+	colOffset   int // first visible column index
+	visibleCols int // number of columns that fit in viewport
+
+	// Table viewport
+	tableDataRows int // number of data rows visible in table (excludes header)
+
+	// Cell editing
+	editingCell   bool
+	editCellCol   int
+	editCellRow   int
+	editCellValue string
+	editError     error
+
 	// Lists
 	dbList    list.Model
 	tableList list.Model
@@ -73,6 +87,11 @@ type App struct {
 	queryInput  string
 	queryActive bool
 	queryError  error
+
+	// Query history
+	queryHistory      []string // cached query strings (most recent first)
+	queryHistoryIdx   int      // -1 = current input, 0+ = history index
+	queryHistoryDraft string   // saves current input when navigating history
 
 	// UI state
 	showHelp   bool
@@ -304,6 +323,22 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case ErrorMsg:
 		a.err = msg.Error
 		return a, nil
+
+	case QueryHistoryLoadedMsg:
+		if msg.Queries != nil {
+			a.queryHistory = msg.Queries
+		}
+		return a, nil
+
+	case CellUpdatedMsg:
+		a.editingCell = false
+		if msg.Error != nil {
+			a.editError = msg.Error
+		} else {
+			a.editError = nil
+			a.updateDataTable()
+		}
+		return a, nil
 	}
 
 	// Update focused component
@@ -335,8 +370,24 @@ func (a *App) updateSizes() {
 
 	a.dbList.SetSize(listWidth, contentHeight)
 	a.tableList.SetSize(listWidth, contentHeight)
-	a.dataTable.SetHeight(contentHeight - 2)
-	a.dataTable.SetWidth(dataWidth)
+
+	// Table height: contentHeight - borders(2) - header row(1) - padding(2)
+	tableHeight := contentHeight - 5
+	if tableHeight < 1 {
+		tableHeight = 1
+	}
+	a.dataTable.SetHeight(tableHeight)
+	a.tableDataRows = tableHeight - 1   // subtract header row
+	a.dataTable.SetWidth(dataWidth - 4) // account for pane padding
+
+	// Calculate how many columns fit in viewport
+	// Each column uses: colWidth + 1 (gap between columns)
+	const minColWidth = 10
+	availableWidth := dataWidth - 8 // borders + padding
+	a.visibleCols = availableWidth / (minColWidth + 1)
+	if a.visibleCols < 1 {
+		a.visibleCols = 1
+	}
 }
 
 func (a *App) updateDBList() {
@@ -362,39 +413,88 @@ func (a *App) updateDataTable() {
 		return
 	}
 
-	// Calculate column widths
+	totalCols := len(a.dataColumns)
+
+	// Clamp colOffset to valid range
+	if a.colOffset < 0 {
+		a.colOffset = 0
+	}
+	if a.colOffset >= totalCols {
+		a.colOffset = totalCols - 1
+	}
+
+	// Determine which columns to show
+	endCol := a.colOffset + a.visibleCols
+	if endCol > totalCols {
+		endCol = totalCols
+	}
+	visibleColCount := endCol - a.colOffset
+	if visibleColCount < 1 {
+		visibleColCount = 1
+		endCol = a.colOffset + 1
+		if endCol > totalCols {
+			endCol = totalCols
+			a.colOffset = totalCols - 1
+		}
+	}
+
+	// Calculate available width for visible columns
 	dataWidth := a.width - (a.width/5)*2 - 10
-	colWidth := dataWidth / len(a.dataColumns)
+	// bubbles/table adds 1 char padding on each side of cell content
+	// plus 1 char gap between columns
+	// So effective width per column = colWidth + 3
+	availableForContent := dataWidth - (visibleColCount * 3)
+	colWidth := availableForContent / visibleColCount
+
+	// Enforce reasonable bounds
 	if colWidth < 8 {
 		colWidth = 8
 	}
-	if colWidth > 30 {
-		colWidth = 30
+	if colWidth > 25 {
+		colWidth = 25
 	}
 
-	columns := make([]table.Column, len(a.dataColumns))
-	for i, col := range a.dataColumns {
+	columns := make([]table.Column, visibleColCount)
+	for i := 0; i < visibleColCount; i++ {
+		srcIdx := a.colOffset + i
 		columns[i] = table.Column{
-			Title: col,
+			Title: truncateString(a.dataColumns[srcIdx], colWidth-2),
 			Width: colWidth,
 		}
 	}
 
 	rows := make([]table.Row, len(a.dataRows))
 	for i, row := range a.dataRows {
-		cells := make([]string, len(row))
-		for j, v := range row {
-			cells[j] = truncateString(database.FormatValue(v), colWidth)
+		cells := make([]string, visibleColCount)
+		for j := 0; j < visibleColCount; j++ {
+			srcIdx := a.colOffset + j
+			if srcIdx < len(row) {
+				cells[j] = truncateString(database.FormatValue(row[srcIdx]), colWidth-2)
+			} else {
+				cells[j] = ""
+			}
 		}
 		rows[i] = cells
 	}
 
+	// Must set rows before columns to avoid index panic in bubbles/table
+	a.dataTable.SetRows([]table.Row{}) // clear first
 	a.dataTable.SetColumns(columns)
 	a.dataTable.SetRows(rows)
-	a.dataTable.SetCursor(a.selectedRow)
+	if a.selectedRow < len(rows) {
+		a.dataTable.SetCursor(a.selectedRow)
+	} else if len(rows) > 0 {
+		a.dataTable.SetCursor(0)
+		a.selectedRow = 0
+	}
 }
 
 func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Handle cell editing mode
+	if a.editingCell {
+		return a.handleEditInput(msg)
+	}
+
 	// Handle query input mode
 	if a.queryActive {
 		return a.handleQueryInput(msg)
@@ -427,7 +527,9 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, a.keys.Query):
 		a.queryActive = true
 		a.queryInput = ""
-		return a, nil
+		a.queryHistoryIdx = -1
+		a.queryHistoryDraft = ""
+		return a, a.loadQueryHistory
 
 	case key.Matches(msg, a.keys.Refresh):
 		return a, a.loadDatabases
@@ -443,14 +545,26 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case key.Matches(msg, a.keys.Left):
-		if a.focus > 0 {
+		if a.focus == FocusData {
+			// Scroll columns left
+			if a.colOffset > 0 {
+				a.colOffset--
+				a.updateDataTable()
+			}
+		} else if a.focus > 0 {
 			a.focus--
 			a.updateFocus()
 		}
 		return a, nil
 
 	case key.Matches(msg, a.keys.Right):
-		if a.focus < FocusData {
+		if a.focus == FocusData {
+			// Scroll columns right
+			if a.colOffset < len(a.dataColumns)-1 {
+				a.colOffset++
+				a.updateDataTable()
+			}
+		} else if a.focus < FocusData {
 			a.focus++
 			a.updateFocus()
 		}
@@ -476,6 +590,9 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case key.Matches(msg, a.keys.Select):
 		return a.handleSelect()
+
+	case key.Matches(msg, a.keys.Edit):
+		return a.handleEditCell()
 
 	case key.Matches(msg, a.keys.Schema):
 		if a.focus == FocusTables && a.selectedTable < len(a.tables) {
@@ -670,13 +787,48 @@ func (a *App) handleQueryInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
 	case tea.KeyEsc:
 		a.queryActive = false
+		a.queryHistoryIdx = -1
 		return a, nil
 
 	case tea.KeyEnter:
 		if a.queryInput != "" {
+			query := a.queryInput
+			// Add to history cache (prepend, avoid duplicates)
+			if len(a.queryHistory) == 0 || a.queryHistory[0] != query {
+				a.queryHistory = append([]string{query}, a.queryHistory...)
+				if len(a.queryHistory) > 100 {
+					a.queryHistory = a.queryHistory[:100]
+				}
+			}
+			a.queryHistoryIdx = -1
 			return a, a.executeQuery
 		}
 		a.queryActive = false
+		return a, nil
+
+	case tea.KeyUp:
+		// Navigate to older query in history
+		if len(a.queryHistory) > 0 && a.queryHistoryIdx < len(a.queryHistory)-1 {
+			if a.queryHistoryIdx == -1 {
+				// Save current input as draft
+				a.queryHistoryDraft = a.queryInput
+			}
+			a.queryHistoryIdx++
+			a.queryInput = a.queryHistory[a.queryHistoryIdx]
+		}
+		return a, nil
+
+	case tea.KeyDown:
+		// Navigate to newer query in history
+		if a.queryHistoryIdx > -1 {
+			a.queryHistoryIdx--
+			if a.queryHistoryIdx == -1 {
+				// Restore draft
+				a.queryInput = a.queryHistoryDraft
+			} else {
+				a.queryInput = a.queryHistory[a.queryHistoryIdx]
+			}
+		}
 		return a, nil
 
 	case tea.KeyBackspace:
@@ -705,6 +857,195 @@ func (a *App) executeQuery() tea.Msg {
 	db := a.databases[a.selectedDB]
 	result, err := a.dbManager.ExecuteQuery(db.Alias, a.user, "", a.queryInput)
 	return QueryExecutedMsg{Result: result, Error: err}
+}
+
+func (a *App) loadQueryHistory() tea.Msg {
+	if a.historyStore == nil || a.user == nil {
+		return QueryHistoryLoadedMsg{Queries: nil}
+	}
+
+	// Load recent queries for this user
+	records, err := a.historyStore.GetQueryHistoryForUser(a.user.Name, 100)
+	if err != nil {
+		return QueryHistoryLoadedMsg{Queries: nil}
+	}
+
+	queries := make([]string, 0, len(records))
+	seen := make(map[string]bool)
+	for _, r := range records {
+		if r.Query != "" && !seen[r.Query] {
+			queries = append(queries, r.Query)
+			seen[r.Query] = true
+		}
+	}
+	return QueryHistoryLoadedMsg{Queries: queries}
+}
+
+func (a *App) handleEditCell() (tea.Model, tea.Cmd) {
+	if a.focus != FocusData {
+		return a, nil
+	}
+
+	// Check access level
+	if a.selectedDB >= len(a.databases) {
+		return a, nil
+	}
+	db := a.databases[a.selectedDB]
+	if !db.AccessLevel.CanWrite() {
+		a.editError = fmt.Errorf("read-only access")
+		return a, nil
+	}
+
+	// Check we have data and a valid row
+	if len(a.dataRows) == 0 || a.selectedRow >= len(a.dataRows) {
+		return a, nil
+	}
+
+	// Enter edit mode for first visible column
+	a.editingCell = true
+	a.editCellRow = a.selectedRow
+	a.editCellCol = a.colOffset // start at first visible column
+	a.editError = nil
+
+	// Get current value
+	if a.editCellCol < len(a.dataRows[a.selectedRow]) {
+		a.editCellValue = database.FormatValue(a.dataRows[a.selectedRow][a.editCellCol])
+	} else {
+		a.editCellValue = ""
+	}
+
+	return a, nil
+}
+
+func (a *App) handleEditInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEsc:
+		a.editingCell = false
+		a.editError = nil
+		return a, nil
+
+	case tea.KeyEnter:
+		// Save the cell value
+		return a, a.executeCellUpdate
+
+	case tea.KeyLeft:
+		// Move to previous column
+		if a.editCellCol > 0 {
+			a.editCellCol--
+			if a.editCellCol < a.colOffset {
+				a.colOffset = a.editCellCol
+				a.updateDataTable()
+			}
+			if a.editCellCol < len(a.dataRows[a.editCellRow]) {
+				a.editCellValue = database.FormatValue(a.dataRows[a.editCellRow][a.editCellCol])
+			} else {
+				a.editCellValue = ""
+			}
+		}
+		return a, nil
+
+	case tea.KeyRight, tea.KeyTab:
+		// Move to next column
+		if a.editCellCol < len(a.dataColumns)-1 {
+			a.editCellCol++
+			if a.editCellCol >= a.colOffset+a.visibleCols {
+				a.colOffset = a.editCellCol - a.visibleCols + 1
+				a.updateDataTable()
+			}
+			if a.editCellCol < len(a.dataRows[a.editCellRow]) {
+				a.editCellValue = database.FormatValue(a.dataRows[a.editCellRow][a.editCellCol])
+			} else {
+				a.editCellValue = ""
+			}
+		}
+		return a, nil
+
+	case tea.KeyBackspace:
+		if len(a.editCellValue) > 0 {
+			a.editCellValue = a.editCellValue[:len(a.editCellValue)-1]
+		}
+		return a, nil
+
+	case tea.KeyRunes:
+		a.editCellValue += string(msg.Runes)
+		return a, nil
+
+	case tea.KeySpace:
+		a.editCellValue += " "
+		return a, nil
+	}
+
+	return a, nil
+}
+
+func (a *App) executeCellUpdate() tea.Msg {
+	if a.selectedDB >= len(a.databases) || a.selectedTable >= len(a.tables) {
+		return CellUpdatedMsg{Error: fmt.Errorf("no table selected")}
+	}
+
+	db := a.databases[a.selectedDB]
+	tableName := a.tables[a.selectedTable]
+
+	conn, err := a.dbManager.OpenConnection(db.Alias, a.user)
+	if err != nil {
+		return CellUpdatedMsg{Error: err}
+	}
+
+	// Get schema to find primary key
+	schema := database.NewSchema(conn)
+	tableInfo, err := schema.GetTableInfo(tableName)
+	if err != nil {
+		return CellUpdatedMsg{Error: err}
+	}
+
+	// Find primary key column(s)
+	var pkCols []string
+	for _, col := range tableInfo.Columns {
+		if col.PrimaryKey > 0 {
+			pkCols = append(pkCols, col.Name)
+		}
+	}
+
+	if len(pkCols) == 0 {
+		return CellUpdatedMsg{Error: fmt.Errorf("table has no primary key")}
+	}
+
+	// Build UPDATE query
+	colName := a.dataColumns[a.editCellCol]
+	row := a.dataRows[a.editCellRow]
+
+	// Build WHERE clause from primary key values
+	whereParts := make([]string, len(pkCols))
+	whereArgs := make([]any, len(pkCols))
+	for i, pkCol := range pkCols {
+		// Find pk column index
+		pkIdx := -1
+		for j, c := range a.dataColumns {
+			if c == pkCol {
+				pkIdx = j
+				break
+			}
+		}
+		if pkIdx == -1 || pkIdx >= len(row) {
+			return CellUpdatedMsg{Error: fmt.Errorf("primary key column %s not found in data", pkCol)}
+		}
+		whereParts[i] = fmt.Sprintf("%s = ?", pkCol)
+		whereArgs[i] = row[pkIdx]
+	}
+
+	query := fmt.Sprintf("UPDATE %s SET %s = ? WHERE %s",
+		tableName, colName, strings.Join(whereParts, " AND "))
+	args := append([]any{a.editCellValue}, whereArgs...)
+
+	_, err = conn.Execute(query, args...)
+	if err != nil {
+		return CellUpdatedMsg{Error: err}
+	}
+
+	// Update local data
+	a.dataRows[a.editCellRow][a.editCellCol] = a.editCellValue
+
+	return CellUpdatedMsg{Error: nil}
 }
 
 func (a *App) loadSchema() tea.Msg {
@@ -776,9 +1117,9 @@ func (a *App) View() string {
 }
 
 func (a *App) renderDBPane(width, height int) string {
-	style := paneStyle
+	style := paneStyle.MaxHeight(height).MaxWidth(width)
 	if a.focus == FocusDatabases {
-		style = focusedPaneStyle
+		style = focusedPaneStyle.MaxHeight(height).MaxWidth(width)
 	}
 
 	// Render list content manually for consistent styling
@@ -834,9 +1175,9 @@ func (a *App) renderDBPane(width, height int) string {
 }
 
 func (a *App) renderTablePane(width, height int) string {
-	style := paneStyle
+	style := paneStyle.MaxHeight(height).MaxWidth(width)
 	if a.focus == FocusTables {
-		style = focusedPaneStyle
+		style = focusedPaneStyle.MaxHeight(height).MaxWidth(width)
 	}
 
 	var content strings.Builder
@@ -889,25 +1230,91 @@ func (a *App) renderTablePane(width, height int) string {
 }
 
 func (a *App) renderDataPane(width, height int) string {
-	style := paneStyle
+	style := paneStyle.MaxHeight(height).MaxWidth(width)
 	if a.focus == FocusData {
-		style = focusedPaneStyle
+		style = focusedPaneStyle.MaxHeight(height).MaxWidth(width)
 	}
 
 	if len(a.dataColumns) == 0 {
 		return style.Width(width).Height(height).Render(dimItemStyle.Render("No data"))
 	}
 
-	// Use bubbles table
-	tableView := a.dataTable.View()
+	var content strings.Builder
 
-	// Add loading indicator if more rows available
-	var footer string
-	if int64(len(a.dataRows)) < a.totalRows {
-		footer = dimItemStyle.Render(fmt.Sprintf("\n↓ %d more rows (scroll to load)", a.totalRows-int64(len(a.dataRows))))
+	// Column scroll indicator (header)
+	totalCols := len(a.dataColumns)
+	endCol := a.colOffset + a.visibleCols
+	if endCol > totalCols {
+		endCol = totalCols
+	}
+	var colIndicator string
+	if a.colOffset > 0 || endCol < totalCols {
+		leftArrow := ""
+		rightArrow := ""
+		if a.colOffset > 0 {
+			leftArrow = fmt.Sprintf("← %d ", a.colOffset)
+		}
+		if endCol < totalCols {
+			rightArrow = fmt.Sprintf(" %d →", totalCols-endCol)
+		}
+		colIndicator = dimItemStyle.Render(fmt.Sprintf("%scols %d-%d/%d%s", leftArrow, a.colOffset+1, endCol, totalCols, rightArrow))
+		content.WriteString(colIndicator)
+		content.WriteString("\n")
 	}
 
-	return style.Width(width).Height(height).Render(tableView + footer)
+	// Edit mode indicator
+	if a.editingCell {
+		editInfo := fmt.Sprintf("Editing [%s]: %s█", a.dataColumns[a.editCellCol], a.editCellValue)
+		content.WriteString(queryInputStyle.Render(editInfo))
+		content.WriteString("\n")
+	} else if a.editError != nil {
+		content.WriteString(errorStyle.Render(a.editError.Error()))
+		content.WriteString("\n")
+	}
+
+	// Get table view and truncate to fit
+	tableView := a.dataTable.View()
+
+	// Split by lines and limit to available height
+	lines := strings.Split(tableView, "\n")
+	extraLines := 2 // for indicators
+	if a.colOffset > 0 || endCol < totalCols {
+		extraLines++
+	}
+	if a.editingCell || a.editError != nil {
+		extraLines++
+	}
+	maxLines := height - 4 - extraLines
+	if maxLines < 1 {
+		maxLines = 1
+	}
+	if len(lines) > maxLines {
+		lines = lines[:maxLines]
+		tableView = strings.Join(lines, "\n")
+	}
+
+	content.WriteString(tableView)
+
+	// Add indicator for rows below viewport
+	// Estimate scroll offset: table keeps cursor visible, assume cursor near bottom of viewport
+	scrollOffset := a.selectedRow - a.tableDataRows + 1
+	if scrollOffset < 0 {
+		scrollOffset = 0
+	}
+	lastVisible := scrollOffset + a.tableDataRows - 1
+	if lastVisible >= len(a.dataRows) {
+		lastVisible = len(a.dataRows) - 1
+	}
+	rowsBelow := a.totalRows - int64(lastVisible) - 1
+	if rowsBelow > 0 {
+		indicator := fmt.Sprintf("\n↓ %d more rows", rowsBelow)
+		if int64(len(a.dataRows)) < a.totalRows {
+			indicator += " (scroll to load)"
+		}
+		content.WriteString(dimItemStyle.Render(indicator))
+	}
+
+	return style.Width(width).Height(height).Render(content.String())
 }
 
 func (a *App) renderQueryBar() string {
@@ -972,15 +1379,16 @@ func (a *App) renderHelp() string {
 		key  string
 		desc string
 	}{
-		{"↑/k, ↓/j", "Navigate items"},
-		{"←/h, →/l", "Switch panes"},
+		{"↑/k, ↓/j", "Navigate rows"},
+		{"←/h, →/l", "Scroll columns (in data pane)"},
 		{"PgUp/^U", "Page up"},
 		{"PgDn/^D", "Page down"},
 		{"Home/g", "Go to top"},
 		{"End/G", "Go to bottom"},
 		{"Tab", "Next pane"},
 		{"Enter", "Select"},
-		{"/", "Query mode"},
+		{"/", "Query mode (↑/↓ for history)"},
+		{"e", "Edit cell (write access)"},
 		{"s", "Show schema"},
 		{"r", "Refresh"},
 		{"?", "Toggle help"},

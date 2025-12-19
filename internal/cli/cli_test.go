@@ -13,11 +13,11 @@ import (
 
 // testEnv sets up a test environment with database manager.
 type testEnv struct {
-	t        *testing.T
-	dbPath   string
-	cleanup  func()
-	manager  *database.Manager
-	handler  *Handler
+	t            *testing.T
+	dbPath       string
+	cleanup      func()
+	manager      *database.Manager
+	handler      *Handler
 	adminUser    *access.UserInfo
 	readOnlyUser *access.UserInfo
 	anonUser     *access.UserInfo
@@ -52,11 +52,11 @@ func newTestEnv(t *testing.T, fixture string) *testEnv {
 	}
 
 	env := &testEnv{
-		t:       t,
-		dbPath:  dbPath,
-		cleanup: cleanup,
-		manager: manager,
-		handler: NewHandler(manager, nil, "test"),
+		t:            t,
+		dbPath:       dbPath,
+		cleanup:      cleanup,
+		manager:      manager,
+		handler:      NewHandler(manager, nil, "test"),
 		adminUser:    &access.UserInfo{Name: "admin", IsAdmin: true},
 		readOnlyUser: &access.UserInfo{Name: "reader"},
 		anonUser:     &access.UserInfo{Name: "anon", IsAnonymous: true},
@@ -403,4 +403,3 @@ func TestCLI_Version(t *testing.T) {
 		t.Errorf("expected version string, got: %s", stdout)
 	}
 }
-

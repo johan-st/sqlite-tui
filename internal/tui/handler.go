@@ -27,4 +27,3 @@ func Handler(dbManager *database.Manager, historyStore *history.Store) bubbletea
 		}
 	}
 }
-

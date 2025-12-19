@@ -186,4 +186,3 @@ func buildCreateTableSQL(tableName, colSpec string) string {
 
 	return fmt.Sprintf("CREATE TABLE %s (%s)", quoteIdentifier(tableName), strings.Join(colDefs, ", "))
 }
-

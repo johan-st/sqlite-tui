@@ -188,4 +188,3 @@ func (h *Handler) cmdDelete(ctx *CommandContext) {
 			map[string]any{"where": where})
 	}
 }
-

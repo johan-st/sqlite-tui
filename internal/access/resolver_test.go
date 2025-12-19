@@ -9,10 +9,10 @@ func TestResolver_AdminAccess(t *testing.T) {
 	r.AddAdmin("admin_user")
 
 	tests := []struct {
-		name     string
-		user     *UserInfo
-		dbPath   string
-		dbAlias  string
+		name      string
+		user      *UserInfo
+		dbPath    string
+		dbAlias   string
 		wantLevel Level
 	}{
 		{
@@ -188,7 +188,7 @@ func TestLevel_AccessMethods(t *testing.T) {
 		canAdmin    bool
 	}{
 		{None, false, false, false, false},
-		{ReadOnly, true, false, true, false},   // ReadOnly can download
+		{ReadOnly, true, false, true, false}, // ReadOnly can download
 		{ReadWrite, true, true, true, false},
 		{Admin, true, true, true, true},
 	}
@@ -242,4 +242,3 @@ func TestResolver_NilUser(t *testing.T) {
 		t.Errorf("nil user access = %v, want ReadOnly", level)
 	}
 }
-

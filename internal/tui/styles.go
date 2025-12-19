@@ -143,4 +143,3 @@ var modalStyle = lipgloss.NewStyle().
 	BorderForeground(primaryColor).
 	Padding(1, 2).
 	Background(bgColor)
-

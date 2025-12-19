@@ -375,5 +375,3 @@ func TestReadOnly_CannotWrite(t *testing.T) {
 		t.Error("expected error when dropping table via read-only connection")
 	}
 }
-
-

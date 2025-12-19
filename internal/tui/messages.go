@@ -19,10 +19,10 @@ type TablesLoadedMsg struct {
 
 // DataLoadedMsg is sent when table data is loaded.
 type DataLoadedMsg struct {
-	Result     *database.QueryResult
-	TotalRows  int64
-	Offset     int
-	Error      error
+	Result    *database.QueryResult
+	TotalRows int64
+	Offset    int
+	Error     error
 }
 
 // MoreDataLoadedMsg is sent when additional rows are loaded.
@@ -52,3 +52,12 @@ type ErrorMsg struct {
 // RefreshMsg triggers a refresh of the current view.
 type RefreshMsg struct{}
 
+// QueryHistoryLoadedMsg is sent when query history is loaded.
+type QueryHistoryLoadedMsg struct {
+	Queries []string
+}
+
+// CellUpdatedMsg is sent when a cell update completes.
+type CellUpdatedMsg struct {
+	Error error
+}

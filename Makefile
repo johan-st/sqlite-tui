@@ -12,27 +12,29 @@ all: build
 
 # Build the binary
 build:
-	go build $(LDFLAGS) -o $(BINARY_NAME) ./cmd/sqlite-tui
+	@mkdir -p bin
+	go build $(LDFLAGS) -o bin/$(BINARY_NAME) ./cmd/sqlite-tui
 
 # Build for all platforms
 build-all:
-	GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o $(BINARY_NAME)-linux-amd64 ./cmd/sqlite-tui
-	GOOS=linux GOARCH=arm64 go build $(LDFLAGS) -o $(BINARY_NAME)-linux-arm64 ./cmd/sqlite-tui
-	GOOS=darwin GOARCH=amd64 go build $(LDFLAGS) -o $(BINARY_NAME)-darwin-amd64 ./cmd/sqlite-tui
-	GOOS=darwin GOARCH=arm64 go build $(LDFLAGS) -o $(BINARY_NAME)-darwin-arm64 ./cmd/sqlite-tui
-	GOOS=windows GOARCH=amd64 go build $(LDFLAGS) -o $(BINARY_NAME)-windows-amd64.exe ./cmd/sqlite-tui
+	@mkdir -p bin
+	GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o ./bin/$(BINARY_NAME)-linux-amd64 ./cmd/sqlite-tui
+	GOOS=linux GOARCH=arm64 go build $(LDFLAGS) -o ./bin/$(BINARY_NAME)-linux-arm64 ./cmd/sqlite-tui
+	GOOS=darwin GOARCH=amd64 go build $(LDFLAGS) -o ./bin/$(BINARY_NAME)-darwin-amd64 ./cmd/sqlite-tui
+	GOOS=darwin GOARCH=arm64 go build $(LDFLAGS) -o ./bin/$(BINARY_NAME)-darwin-arm64 ./cmd/sqlite-tui
+	GOOS=windows GOARCH=amd64 go build $(LDFLAGS) -o ./bin/$(BINARY_NAME)-windows-amd64.exe ./cmd/sqlite-tui
 
 # Run the application
 run: build
-	./$(BINARY_NAME)
+	./bin/$(BINARY_NAME)
 
 # Run in local mode only
 local: build
-	./$(BINARY_NAME) -local
+	./bin/$(BINARY_NAME) -local
 
 # Run SSH server only
 ssh: build
-	./$(BINARY_NAME) -ssh
+	./bin/$(BINARY_NAME) -ssh
 
 # Run with hot-reloading (requires air: go install github.com/air-verse/air@latest)
 dev:
@@ -79,6 +81,7 @@ test-golden-update:
 # Clean build artifacts
 clean:
 	rm -f $(BINARY_NAME) $(BINARY_NAME)-*
+	rm -rf bin/
 	rm -f coverage.out coverage.html
 	rm -rf .sqlite-tui/
 

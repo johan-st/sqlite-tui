@@ -98,4 +98,3 @@ func (h *Handler) cmdDownload(ctx *CommandContext) {
 		return
 	}
 }
-

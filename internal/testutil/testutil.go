@@ -218,4 +218,3 @@ func MustQueryRow(t *testing.T, db *sql.DB, query string, dest ...any) {
 		t.Fatalf("MustQueryRow failed: %v\nQuery: %s", err, query)
 	}
 }
-
