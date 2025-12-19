@@ -72,14 +72,14 @@ func (r *Resolver) Resolve(user *UserInfo, dbPath, dbAlias string) Level {
 	// 2. Check user-specific rules
 	if user != nil && !user.IsAnonymous {
 		if rules, ok := r.UserRules[user.Name]; ok {
-			if level := matchRules(rules, dbPath, dbAlias); level != None {
+			if level, matched := matchRules(rules, dbPath, dbAlias); matched {
 				return level
 			}
 		}
 	}
 
 	// 3. Check public rules
-	if level := matchRules(r.PublicRules, dbPath, dbAlias); level != None {
+	if level, matched := matchRules(r.PublicRules, dbPath, dbAlias); matched {
 		return level
 	}
 
@@ -88,14 +88,14 @@ func (r *Resolver) Resolve(user *UserInfo, dbPath, dbAlias string) Level {
 }
 
 // matchRules finds the first matching rule and returns its level.
-// Returns None if no rule matches.
-func matchRules(rules []Rule, dbPath, dbAlias string) Level {
+// Returns the level and true if a rule matched, or None and false if no match.
+func matchRules(rules []Rule, dbPath, dbAlias string) (Level, bool) {
 	for _, rule := range rules {
 		if matchPattern(rule.Pattern, dbPath, dbAlias) {
-			return rule.Level
+			return rule.Level, true
 		}
 	}
-	return None
+	return None, false
 }
 
 // matchPattern checks if a pattern matches a database path or alias.

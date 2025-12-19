@@ -90,34 +90,25 @@ func (c *Connection) Close() error {
 }
 
 // Execute runs a query that doesn't return rows (INSERT, UPDATE, DELETE).
+// Note: sql.DB handles its own connection pooling and locking, so we don't
+// need to hold a mutex during these operations. The mutex is only used for
+// protecting Connection struct fields.
 func (c *Connection) Execute(query string, args ...any) (sql.Result, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	return c.DB.Exec(query, args...)
 }
 
 // Query runs a query that returns rows.
 func (c *Connection) Query(query string, args ...any) (*sql.Rows, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	return c.DB.Query(query, args...)
 }
 
 // QueryRow runs a query that returns at most one row.
 func (c *Connection) QueryRow(query string, args ...any) *sql.Row {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	return c.DB.QueryRow(query, args...)
 }
 
 // Begin starts a new transaction.
 func (c *Connection) Begin() (*sql.Tx, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	return c.DB.Begin()
 }
 

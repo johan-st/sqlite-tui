@@ -145,9 +145,15 @@ func (s *Schema) GetIndexes(tableName string) ([]IndexInfo, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to get index list: %w", err)
 	}
-	defer rows.Close()
 
-	var indexes []IndexInfo
+	// Collect index info first, then close rows before making nested queries
+	// (SQLite with MaxOpenConns=1 will block if we try to query while iterating)
+	type indexMeta struct {
+		name   string
+		unique bool
+	}
+	var metas []indexMeta
+
 	for rows.Next() {
 		var seq int
 		var name string
@@ -155,11 +161,21 @@ func (s *Schema) GetIndexes(tableName string) ([]IndexInfo, error) {
 		var origin string
 		var partial int
 		if err := rows.Scan(&seq, &name, &unique, &origin, &partial); err != nil {
+			rows.Close()
 			return nil, fmt.Errorf("failed to scan index info: %w", err)
 		}
+		metas = append(metas, indexMeta{name: name, unique: unique == 1})
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
 
-		// Get columns in this index
-		colRows, err := s.conn.Query(fmt.Sprintf("PRAGMA index_info(%s)", quoteIdentifier(name)))
+	// Now fetch column info for each index
+	var indexes []IndexInfo
+	for _, meta := range metas {
+		colRows, err := s.conn.Query(fmt.Sprintf("PRAGMA index_info(%s)", quoteIdentifier(meta.name)))
 		if err != nil {
 			return nil, fmt.Errorf("failed to get index columns: %w", err)
 		}
@@ -177,12 +193,12 @@ func (s *Schema) GetIndexes(tableName string) ([]IndexInfo, error) {
 		colRows.Close()
 
 		indexes = append(indexes, IndexInfo{
-			Name:    name,
-			Unique:  unique == 1,
+			Name:    meta.name,
+			Unique:  meta.unique,
 			Columns: columns,
 		})
 	}
-	return indexes, rows.Err()
+	return indexes, nil
 }
 
 // GetForeignKeys returns foreign key information for a table.

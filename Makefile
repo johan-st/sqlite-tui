@@ -42,10 +42,39 @@ dev:
 test:
 	go test -v ./...
 
+# Run tests with short output
+test-short:
+	go test ./...
+
 # Run tests with coverage
 test-coverage:
 	go test -coverprofile=coverage.out ./...
 	go tool cover -html=coverage.out -o coverage.html
+	@echo "Coverage report: coverage.html"
+
+# Run only access control tests (critical security tests)
+test-access:
+	go test -v ./internal/access/... ./internal/database/... -run "Access|ReadOnly|Permission"
+
+# Run SQL injection tests
+test-injection:
+	go test -v ./internal/database/... -run "Injection"
+
+# Run CLI tests
+test-cli:
+	go test -v ./internal/cli/...
+
+# Run tests with race detection
+test-race:
+	go test -race ./...
+
+# Generate test fixtures (run when fixture schema changes)
+test-fixtures:
+	cd testdata/fixtures && go run gen_fixtures.go
+
+# Update golden files (run when expected output changes)
+test-golden-update:
+	GOLDEN_UPDATE=1 go test -v ./...
 
 # Clean build artifacts
 clean:
@@ -85,14 +114,26 @@ help:
 	@echo "sqlite-tui Makefile"
 	@echo ""
 	@echo "Usage:"
-	@echo "  make build      - Build the binary"
-	@echo "  make run        - Build and run"
-	@echo "  make local      - Run in local mode (no SSH)"
-	@echo "  make ssh        - Run SSH server only"
-	@echo "  make dev        - Run with hot-reloading"
-	@echo "  make test       - Run tests"
-	@echo "  make test-db    - Create test database"
-	@echo "  make clean      - Clean build artifacts"
-	@echo "  make install    - Install to GOPATH/bin"
-	@echo "  make deps       - Download dependencies"
-	@echo "  make help       - Show this help"
+	@echo "  make build              - Build the binary"
+	@echo "  make run                - Build and run"
+	@echo "  make local              - Run in local mode (no SSH)"
+	@echo "  make ssh                - Run SSH server only"
+	@echo "  make dev                - Run with hot-reloading"
+	@echo ""
+	@echo "Testing:"
+	@echo "  make test               - Run all tests"
+	@echo "  make test-short         - Run tests (short output)"
+	@echo "  make test-coverage      - Run tests with coverage report"
+	@echo "  make test-access        - Run access control tests"
+	@echo "  make test-injection     - Run SQL injection tests"
+	@echo "  make test-cli           - Run CLI tests"
+	@echo "  make test-race          - Run tests with race detection"
+	@echo "  make test-fixtures      - Regenerate test fixtures"
+	@echo "  make test-golden-update - Update golden files"
+	@echo ""
+	@echo "Other:"
+	@echo "  make clean              - Clean build artifacts"
+	@echo "  make install            - Install to GOPATH/bin"
+	@echo "  make deps               - Download dependencies"
+	@echo "  make lint               - Run linter"
+	@echo "  make fmt                - Format code"
