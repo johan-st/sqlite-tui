@@ -366,7 +366,13 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // updateTableHeight recalculates and updates the table height based on current indicators
 func (a *App) updateTableHeight() {
-	contentHeight := a.height - 5 // header (3 lines: title + 2 newlines) + query (1) + status (1)
+	contentHeight := a.height - 2 // query (1) + status (1)
+
+	// Pane inner height = contentHeight - 2 (top and bottom borders)
+	paneInnerHeight := contentHeight - 2
+	if paneInnerHeight < 1 {
+		paneInnerHeight = 1
+	}
 
 	// Calculate indicators that come BEFORE the table (affect table height)
 	indicatorsBeforeTable := 0
@@ -386,16 +392,17 @@ func (a *App) updateTableHeight() {
 		indicatorsBeforeTable++
 	}
 
-	// Calculate maximum available height for table
-	// Account for indicators BEFORE table, and reserve 1 line for "rows below" indicator if needed
-	// We'll calculate if we need the indicator, then adjust table height accordingly
-	maxTableHeight := contentHeight - 2 - indicatorsBeforeTable
+	// Calculate maximum available height for table within the pane
+	maxTableHeight := paneInnerHeight - indicatorsBeforeTable
 	if maxTableHeight < 1 {
 		maxTableHeight = 1
 	}
 
 	// First, check if we need "rows below" indicator using maximum table height
 	dataRowsAvailable := maxTableHeight - 1 // subtract header row
+	if dataRowsAvailable < 1 {
+		dataRowsAvailable = 1
+	}
 	scrollOffset := a.selectedRow - dataRowsAvailable + 1
 	if scrollOffset < 0 {
 		scrollOffset = 0
@@ -410,18 +417,18 @@ func (a *App) updateTableHeight() {
 	}
 
 	// Calculate if we need to show "rows below" indicator
-	maxLoadedRowIndex := int64(len(a.dataRows) - 1)
 	showRowsBelowIndicator := false
-	if int64(len(a.dataRows)) < a.totalRows {
-		// Not all rows loaded - check against totalRows
-		rowsBelow := a.totalRows - int64(lastVisible) - 1
-		if rowsBelow > 0 {
-			showRowsBelowIndicator = true
-		}
-	} else {
-		// All rows loaded - only show indicator if we can't see the last row
-		if int64(lastVisible) < maxLoadedRowIndex {
-			if int64(a.selectedRow) < maxLoadedRowIndex {
+	if len(a.dataRows) > 0 {
+		if int64(len(a.dataRows)) < a.totalRows {
+			// Not all rows loaded - check against totalRows
+			rowsBelow := a.totalRows - int64(lastVisible) - 1
+			if rowsBelow > 0 {
+				showRowsBelowIndicator = true
+			}
+		} else {
+			// All rows loaded - only show indicator if we can't see the last row
+			maxLoadedRowIndex := len(a.dataRows) - 1
+			if lastVisible < maxLoadedRowIndex {
 				showRowsBelowIndicator = true
 			}
 		}
@@ -438,25 +445,47 @@ func (a *App) updateTableHeight() {
 
 	a.dataTable.SetHeight(tableHeight)
 	a.tableDataRows = tableHeight - 1
+	if a.tableDataRows < 1 {
+		a.tableDataRows = 1
+	}
 }
 
 // calculateTableHeight calculates the available height for the table based on indicators
 // This is used for initial sizing in updateSizes
 func (a *App) calculateTableHeight(contentHeight int) int {
-	// Use a conservative estimate - will be refined by updateTableHeight
-	return contentHeight - 2 - 2 // borders + 2 for potential indicators
+	// Pane inner height = contentHeight - 2 (borders)
+	// Conservative estimate: subtract 2 more for potential indicators
+	return contentHeight - 2 - 2
 }
 
 func (a *App) updateSizes() {
-	contentHeight := a.height - 5 // header (3 lines: title + 2 newlines) + query (1) + status (1)
-	listWidth := a.width / 5
-	if listWidth < 15 {
-		listWidth = 15
-	}
-	dataWidth := a.width - listWidth*2 - 6
+	contentHeight := a.height - 2 // query (1) + status (1)
 
-	a.dbList.SetSize(listWidth, contentHeight)
-	a.tableList.SetSize(listWidth, contentHeight)
+	// Calculate panel widths based on content
+	dbWidth := a.calculateDBPaneWidth()
+	tableWidth := a.calculateTablePaneWidth()
+
+	// Cap panel widths to reasonable maximum (1/3 of screen each)
+	maxPanelWidth := a.width / 3
+	if dbWidth > maxPanelWidth {
+		dbWidth = maxPanelWidth
+	}
+	if tableWidth > maxPanelWidth {
+		tableWidth = maxPanelWidth
+	}
+
+	// Minimum widths
+	if dbWidth < 15 {
+		dbWidth = 15
+	}
+	if tableWidth < 12 {
+		tableWidth = 12
+	}
+
+	dataWidth := a.width - dbWidth - tableWidth - 2 // -2 for gaps between panes
+
+	a.dbList.SetSize(dbWidth, contentHeight)
+	a.tableList.SetSize(tableWidth, contentHeight)
 
 	// Calculate table height accounting for indicators
 	tableHeight := a.calculateTableHeight(contentHeight)
@@ -469,8 +498,8 @@ func (a *App) updateSizes() {
 
 	// Calculate how many columns fit in viewport
 	// Each column uses: colWidth + 1 (gap between columns)
-	const minColWidth = 10
-	availableWidth := dataWidth - 8 // borders + padding
+	const minColWidth = 8
+	availableWidth := dataWidth - 4 // borders + padding
 	a.visibleCols = availableWidth / (minColWidth + 1)
 	if a.visibleCols < 1 {
 		a.visibleCols = 1
@@ -552,9 +581,9 @@ func (a *App) updateDataTable() {
 			maxWidth = maxColWidth
 		}
 
-		// Minimum width of 1
-		if maxWidth < 1 {
-			maxWidth = 1
+		// Minimum width of 8
+		if maxWidth < 8 {
+			maxWidth = 8
 		}
 
 		columnWidths[i] = maxWidth
@@ -654,11 +683,15 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case key.Matches(msg, a.keys.Left):
 		if a.focus == FocusData {
-			// Scroll columns left
+			// Scroll columns left, or move to Tables panel if at leftmost
 			if a.colOffset > 0 {
 				a.colOffset--
 				a.updateDataTable()
 				a.updateTableHeight()
+			} else {
+				// At leftmost column - move to Tables panel
+				a.focus = FocusTables
+				a.updateFocus()
 			}
 		} else if a.focus > 0 {
 			a.focus--
@@ -705,7 +738,7 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a.handleEditCell()
 
 	case key.Matches(msg, a.keys.Schema):
-		if a.focus == FocusTables && a.selectedTable < len(a.tables) {
+		if (a.focus == FocusTables || a.focus == FocusData) && a.selectedTable < len(a.tables) {
 			a.showSchema = true
 			return a, a.loadSchema
 		}
@@ -1201,24 +1234,35 @@ func (a *App) View() string {
 		return a.renderSchema()
 	}
 
-	// Calculate pane widths
-	listWidth := a.width / 5
-	if listWidth < 15 {
-		listWidth = 15
+	// Calculate pane widths based on content
+	dbWidth := a.calculateDBPaneWidth()
+	tableWidth := a.calculateTablePaneWidth()
+
+	// Cap panel widths to reasonable maximum (1/3 of screen each)
+	maxPanelWidth := a.width / 3
+	if dbWidth > maxPanelWidth {
+		dbWidth = maxPanelWidth
 	}
-	dataWidth := a.width - listWidth*2 - 6
-	contentHeight := a.height - 5 // header (3 lines: title + 2 newlines) + query (1) + status (1)
+	if tableWidth > maxPanelWidth {
+		tableWidth = maxPanelWidth
+	}
+
+	// Minimum widths
+	if dbWidth < 15 {
+		dbWidth = 15
+	}
+	if tableWidth < 12 {
+		tableWidth = 12
+	}
+
+	dataWidth := a.width - dbWidth - tableWidth - 2 // -2 for gaps between panes
+	contentHeight := a.height - 2                   // query (1) + status (1)
 
 	var b strings.Builder
 
-	// Header
-	header := titleStyle.Render("sqlite-tui") + "  " + dimItemStyle.Render(a.user.DisplayName())
-	b.WriteString(header)
-	b.WriteString("\n\n")
-
-	// Main content - three panes
-	dbPane := a.renderDBPane(listWidth, contentHeight)
-	tablePane := a.renderTablePane(listWidth, contentHeight)
+	// Main content - three panes (no header - title moved to status bar)
+	dbPane := a.renderDBPane(dbWidth, contentHeight)
+	tablePane := a.renderTablePane(tableWidth, contentHeight)
 	dataPane := a.renderDataPane(dataWidth, contentHeight)
 
 	content := lipgloss.JoinHorizontal(lipgloss.Top, dbPane, tablePane, dataPane)
@@ -1236,23 +1280,18 @@ func (a *App) View() string {
 }
 
 func (a *App) renderDBPane(width, height int) string {
-	style := paneStyle.MaxHeight(height).MaxWidth(width)
-	if a.focus == FocusDatabases {
-		style = focusedPaneStyle.MaxHeight(height).MaxWidth(width)
-	}
+	focused := a.focus == FocusDatabases
 
-	// Render list content manually for consistent styling
-	var content strings.Builder
-	content.WriteString(paneHeaderStyle.Render("Databases"))
-	content.WriteString("\n")
-
-	visibleHeight := height - 4
+	// Inner height = height - 2 (borders)
+	visibleHeight := height - 2
 	if visibleHeight < 1 {
 		visibleHeight = 1
 	}
 
+	var content strings.Builder
+
 	if len(a.databases) == 0 {
-		content.WriteString(dimItemStyle.Render("  No databases"))
+		content.WriteString(dimItemStyle.Render(" No databases"))
 	} else {
 		// Calculate scroll offset
 		offset := 0
@@ -1265,7 +1304,7 @@ func (a *App) renderDBPane(width, height int) string {
 		}
 
 		if offset > 0 {
-			content.WriteString(dimItemStyle.Render("  ↑ more\n"))
+			content.WriteString(dimItemStyle.Render(" ↑ more\n"))
 			visibleHeight--
 			end = offset + visibleHeight
 			if end > len(a.databases) {
@@ -1282,34 +1321,32 @@ func (a *App) renderDBPane(width, height int) string {
 				item = normalItemStyle.Render("  " + item)
 			}
 			content.WriteString(item)
-			content.WriteString("\n")
+			if i < end-1 || end < len(a.databases) {
+				content.WriteString("\n")
+			}
 		}
 
 		if end < len(a.databases) {
-			content.WriteString(dimItemStyle.Render("  ↓ more"))
+			content.WriteString(dimItemStyle.Render(" ↓ more"))
 		}
 	}
 
-	return style.Width(width).Height(height).Render(content.String())
+	return a.renderPaneWithTitle(content.String(), width, height, "Databases", focused)
 }
 
 func (a *App) renderTablePane(width, height int) string {
-	style := paneStyle.MaxHeight(height).MaxWidth(width)
-	if a.focus == FocusTables {
-		style = focusedPaneStyle.MaxHeight(height).MaxWidth(width)
-	}
+	focused := a.focus == FocusTables
 
-	var content strings.Builder
-	content.WriteString(paneHeaderStyle.Render("Tables"))
-	content.WriteString("\n")
-
-	visibleHeight := height - 4
+	// Inner height = height - 2 (borders)
+	visibleHeight := height - 2
 	if visibleHeight < 1 {
 		visibleHeight = 1
 	}
 
+	var content strings.Builder
+
 	if len(a.tables) == 0 {
-		content.WriteString(dimItemStyle.Render("  No tables"))
+		content.WriteString(dimItemStyle.Render(" No tables"))
 	} else {
 		offset := 0
 		if a.selectedTable >= visibleHeight {
@@ -1321,7 +1358,7 @@ func (a *App) renderTablePane(width, height int) string {
 		}
 
 		if offset > 0 {
-			content.WriteString(dimItemStyle.Render("  ↑ more\n"))
+			content.WriteString(dimItemStyle.Render(" ↑ more\n"))
 			visibleHeight--
 			end = offset + visibleHeight
 			if end > len(a.tables) {
@@ -1337,25 +1374,24 @@ func (a *App) renderTablePane(width, height int) string {
 				item = normalItemStyle.Render("  " + item)
 			}
 			content.WriteString(item)
-			content.WriteString("\n")
+			if i < end-1 || end < len(a.tables) {
+				content.WriteString("\n")
+			}
 		}
 
 		if end < len(a.tables) {
-			content.WriteString(dimItemStyle.Render("  ↓ more"))
+			content.WriteString(dimItemStyle.Render(" ↓ more"))
 		}
 	}
 
-	return style.Width(width).Height(height).Render(content.String())
+	return a.renderPaneWithTitle(content.String(), width, height, "Tables", focused)
 }
 
 func (a *App) renderDataPane(width, height int) string {
-	style := paneStyle.MaxHeight(height).MaxWidth(width)
-	if a.focus == FocusData {
-		style = focusedPaneStyle.MaxHeight(height).MaxWidth(width)
-	}
+	focused := a.focus == FocusData
 
 	if len(a.dataColumns) == 0 {
-		return style.Width(width).Height(height).Render(dimItemStyle.Render("No data"))
+		return a.renderPaneWithTitle(dimItemStyle.Render("No data"), width, height, "Data", focused)
 	}
 
 	var content strings.Builder
@@ -1366,7 +1402,6 @@ func (a *App) renderDataPane(width, height int) string {
 	if endCol > totalCols {
 		endCol = totalCols
 	}
-	var colIndicator string
 	if a.colOffset > 0 || endCol < totalCols {
 		leftArrow := ""
 		rightArrow := ""
@@ -1376,7 +1411,7 @@ func (a *App) renderDataPane(width, height int) string {
 		if endCol < totalCols {
 			rightArrow = fmt.Sprintf(" %d →", totalCols-endCol)
 		}
-		colIndicator = dimItemStyle.Render(fmt.Sprintf("%scols %d-%d/%d%s", leftArrow, a.colOffset+1, endCol, totalCols, rightArrow))
+		colIndicator := dimItemStyle.Render(fmt.Sprintf("%scols %d-%d/%d%s", leftArrow, a.colOffset+1, endCol, totalCols, rightArrow))
 		content.WriteString(colIndicator)
 		content.WriteString("\n")
 	}
@@ -1396,25 +1431,17 @@ func (a *App) renderDataPane(width, height int) string {
 	content.WriteString(tableView)
 
 	// Add indicator for rows below viewport
-	// The table component keeps the cursor visible, so we need to calculate
-	// the actual last visible row based on the viewport and cursor position
 	scrollOffset := a.selectedRow - a.tableDataRows + 1
 	if scrollOffset < 0 {
 		scrollOffset = 0
 	}
-	// Calculate the last visible row index (0-indexed)
 	lastVisible := scrollOffset + a.tableDataRows - 1
-	// Clamp to available data
 	if lastVisible >= len(a.dataRows) {
 		lastVisible = len(a.dataRows) - 1
 	}
-	// When selectedRow is the last loaded row, lastVisible should be selectedRow
-	// This ensures we don't overestimate what's visible when at the end
 	if a.selectedRow == len(a.dataRows)-1 && len(a.dataRows) > 0 {
 		lastVisible = a.selectedRow
 	}
-	// lastVisible is 0-indexed, convert to 1-indexed for comparison with totalRows
-	// rowsBelow = totalRows - (lastVisible + 1) = totalRows - lastVisible - 1
 	rowsBelow := a.totalRows - int64(lastVisible) - 1
 	if rowsBelow > 0 {
 		indicator := fmt.Sprintf("\n↓ %d more rows", rowsBelow)
@@ -1424,7 +1451,117 @@ func (a *App) renderDataPane(width, height int) string {
 		content.WriteString(dimItemStyle.Render(indicator))
 	}
 
-	return style.Width(width).Height(height).Render(content.String())
+	return a.renderPaneWithTitle(content.String(), width, height, "Data", focused)
+}
+
+// buildBorderTitle builds a top border line with an embedded title
+// width is the total width including border characters
+// title is the plain text title (no styling applied yet)
+// focused determines the border color
+func (a *App) buildBorderTitle(width int, title string, focused bool) string {
+	border := lipgloss.RoundedBorder()
+	var borderColor lipgloss.Color
+	var titleStyle lipgloss.Style
+	if focused {
+		borderColor = lipgloss.Color("#7C3AED") // primaryColor
+		titleStyle = focusedBorderTitleStyle
+	} else {
+		borderColor = lipgloss.Color("#6B7280") // mutedColor
+		titleStyle = borderTitleStyle
+	}
+
+	borderStyle := lipgloss.NewStyle().Foreground(borderColor)
+
+	// Build: ╭─ Title ─────────────────╮
+	// Corner + horizontal line + space + title + space + horizontal lines + corner
+	titleText := title
+	titleRendered := titleStyle.Render(titleText)
+	titleWidth := lipgloss.Width(titleRendered)
+
+	// Calculate how many horizontal border chars we need after the title
+	// Format: ╭─ Title ───────╮
+	// width - 1 (left corner) - 1 (left bar) - 1 (space) - titleWidth - 1 (space) - 1 (right corner) = remaining bars
+	// = width - 5 - titleWidth
+	remainingWidth := width - 5 - titleWidth
+	if remainingWidth < 0 {
+		remainingWidth = 0
+	}
+
+	// Build the line
+	var b strings.Builder
+	b.WriteString(borderStyle.Render(border.TopLeft))
+	b.WriteString(borderStyle.Render(border.Top))
+	b.WriteString(" ")
+	b.WriteString(titleRendered)
+	b.WriteString(" ")
+	for i := 0; i < remainingWidth; i++ {
+		b.WriteString(borderStyle.Render(border.Top))
+	}
+	b.WriteString(borderStyle.Render(border.TopRight))
+
+	return b.String()
+}
+
+// renderPaneWithTitle renders content in a pane with a title in the top border
+func (a *App) renderPaneWithTitle(content string, width, height int, title string, focused bool) string {
+	border := lipgloss.RoundedBorder()
+	var borderColor lipgloss.Color
+	if focused {
+		borderColor = lipgloss.Color("#7C3AED") // primaryColor
+	} else {
+		borderColor = lipgloss.Color("#6B7280") // mutedColor
+	}
+	borderStyle := lipgloss.NewStyle().Foreground(borderColor)
+
+	// Inner dimensions (excluding borders)
+	innerWidth := width - 2   // left and right borders
+	innerHeight := height - 2 // top and bottom borders
+	if innerWidth < 1 {
+		innerWidth = 1
+	}
+	if innerHeight < 1 {
+		innerHeight = 1
+	}
+
+	// Split content into lines and pad/truncate to fit
+	contentLines := strings.Split(content, "\n")
+
+	// Pad or truncate to innerHeight lines
+	for len(contentLines) < innerHeight {
+		contentLines = append(contentLines, "")
+	}
+	if len(contentLines) > innerHeight {
+		contentLines = contentLines[:innerHeight]
+	}
+
+	var result strings.Builder
+
+	// Top border with title
+	result.WriteString(a.buildBorderTitle(width, title, focused))
+	result.WriteString("\n")
+
+	// Content lines with side borders
+	for _, line := range contentLines {
+		result.WriteString(borderStyle.Render(border.Left))
+		// Pad line to innerWidth (accounting for padding)
+		paddedLine := " " + line // left padding
+		lineWidth := lipgloss.Width(paddedLine)
+		if lineWidth < innerWidth {
+			paddedLine += strings.Repeat(" ", innerWidth-lineWidth)
+		}
+		result.WriteString(paddedLine)
+		result.WriteString(borderStyle.Render(border.Right))
+		result.WriteString("\n")
+	}
+
+	// Bottom border
+	result.WriteString(borderStyle.Render(border.BottomLeft))
+	for i := 0; i < innerWidth; i++ {
+		result.WriteString(borderStyle.Render(border.Bottom))
+	}
+	result.WriteString(borderStyle.Render(border.BottomRight))
+
+	return result.String()
 }
 
 func (a *App) renderQueryBar() string {
@@ -1439,17 +1576,27 @@ func (a *App) renderQueryBar() string {
 }
 
 func (a *App) renderStatusBar() string {
-	var essentialParts []string
+	var leftParts []string
+	var rightParts []string
 
-	// Build essential parts first (row count, badge, help)
-	// Row count - show actual total
+	// Left side: title and user
+	leftParts = append(leftParts, titleStyle.Render("sqlite-tui"))
+	leftParts = append(leftParts, dimItemStyle.Render(a.user.DisplayName()))
+
+	// Right side: db/table info, row count, badge, help
+	if a.selectedDB < len(a.databases) {
+		db := a.databases[a.selectedDB]
+		rightParts = append(rightParts, statusKeyStyle.Render(db.Alias))
+	}
+	if a.selectedTable < len(a.tables) {
+		rightParts = append(rightParts, statusValueStyle.Render("> "+a.tables[a.selectedTable]))
+	}
+
+	// Row count
 	if len(a.dataRows) > 0 {
-		essentialParts = append(essentialParts, dimItemStyle.Render(fmt.Sprintf("| row %d/%d", a.selectedRow+1, a.totalRows)))
-		if int64(len(a.dataRows)) < a.totalRows {
-			essentialParts = append(essentialParts, dimItemStyle.Render(fmt.Sprintf("(loaded %d)", len(a.dataRows))))
-		}
+		rightParts = append(rightParts, dimItemStyle.Render(fmt.Sprintf("| row %d/%d", a.selectedRow+1, a.totalRows)))
 	} else if a.totalRows > 0 {
-		essentialParts = append(essentialParts, dimItemStyle.Render(fmt.Sprintf("| %d rows", a.totalRows)))
+		rightParts = append(rightParts, dimItemStyle.Render(fmt.Sprintf("| %d rows", a.totalRows)))
 	}
 
 	// Access level badge
@@ -1466,58 +1613,25 @@ func (a *App) renderStatusBar() string {
 		default:
 			badge = noBadge.Render("NO")
 		}
-		essentialParts = append(essentialParts, badge)
+		rightParts = append(rightParts, badge)
 	}
 
-	essentialParts = append(essentialParts, dimItemStyle.Render("| ?:help q:quit"))
+	rightParts = append(rightParts, dimItemStyle.Render("| ?:help q:quit"))
 
-	// Measure width of essential parts (lipgloss.Width strips ANSI codes)
-	essentialText := strings.Join(essentialParts, " ")
-	essentialWidth := lipgloss.Width(essentialText)
+	// Combine left and right with space in between
+	leftContent := strings.Join(leftParts, " ")
+	rightContent := strings.Join(rightParts, " ")
 
-	// Calculate available width for db/table names
-	// Account for: padding (2), spaces between parts (~3), and some buffer
-	availableWidth := a.width - essentialWidth - 5
-	if availableWidth < 10 {
-		availableWidth = 10 // minimum for db/table names
+	// Calculate padding between left and right
+	leftWidth := lipgloss.Width(leftContent)
+	rightWidth := lipgloss.Width(rightContent)
+	padding := a.width - leftWidth - rightWidth - 2 // -2 for statusBar padding
+	if padding < 1 {
+		padding = 1
 	}
 
-	// Build db/table parts with truncation
-	var dbTableParts []string
-	if a.selectedDB < len(a.databases) {
-		db := a.databases[a.selectedDB]
-		dbAlias := db.Alias
-		maxDbLen := availableWidth / 2
-		if maxDbLen < 5 {
-			maxDbLen = 5
-		}
-		if len(dbAlias) > maxDbLen {
-			dbAlias = truncateString(dbAlias, maxDbLen)
-		}
-		dbTableParts = append(dbTableParts, statusKeyStyle.Render(dbAlias))
-	}
-	if a.selectedTable < len(a.tables) {
-		tableName := a.tables[a.selectedTable]
-		// Reserve space for "> " prefix
-		usedWidth := 0
-		for _, p := range dbTableParts {
-			usedWidth += lipgloss.Width(p) + 1 // +1 for space
-		}
-		maxTableLen := availableWidth - usedWidth - 2 // -2 for "> "
-		if maxTableLen < 3 {
-			maxTableLen = 3
-		}
-		if len(tableName) > maxTableLen {
-			tableName = truncateString(tableName, maxTableLen)
-		}
-		dbTableParts = append(dbTableParts, statusValueStyle.Render("> "+tableName))
-	}
-
-	// Combine all parts
-	allParts := append(dbTableParts, essentialParts...)
-	content := strings.Join(allParts, " ")
-
-	return statusBarStyle.MaxWidth(a.width).Render(content)
+	content := leftContent + strings.Repeat(" ", padding) + rightContent
+	return statusBarStyle.Width(a.width).Render(content)
 }
 
 func (a *App) renderHelp() string {
@@ -1611,4 +1725,30 @@ func truncateString(s string, maxLen int) string {
 		return s[:maxLen]
 	}
 	return s[:maxLen-1] + "…"
+}
+
+// calculateDBPaneWidth returns the width needed for the database panel
+// based on the longest database name, plus space for "> " prefix and borders
+func (a *App) calculateDBPaneWidth() int {
+	maxLen := 9 // "Databases" header length
+	for _, db := range a.databases {
+		if len(db.Alias) > maxLen {
+			maxLen = len(db.Alias)
+		}
+	}
+	// +2 for "> " prefix, +2 for horizontal padding, +2 for borders, +1 extra
+	return maxLen + 7
+}
+
+// calculateTablePaneWidth returns the width needed for the tables panel
+// based on the longest table name, plus space for "> " prefix and borders
+func (a *App) calculateTablePaneWidth() int {
+	maxLen := 6 // "Tables" header length
+	for _, t := range a.tables {
+		if len(t) > maxLen {
+			maxLen = len(t)
+		}
+	}
+	// +2 for "> " prefix, +2 for horizontal padding, +2 for borders, +1 extra
+	return maxLen + 7
 }

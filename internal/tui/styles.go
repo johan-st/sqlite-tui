@@ -27,8 +27,16 @@ var (
 
 	paneHeaderStyle = lipgloss.NewStyle().
 			Bold(true).
-			Foreground(textColor).
-			MarginBottom(1)
+			Foreground(textColor)
+
+	// For rendering title in border
+	borderTitleStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(textColor)
+
+	focusedBorderTitleStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(primaryColor)
 )
 
 // List item styles
@@ -134,8 +142,7 @@ var (
 // Title style
 var titleStyle = lipgloss.NewStyle().
 	Bold(true).
-	Foreground(primaryColor).
-	MarginBottom(1)
+	Foreground(primaryColor)
 
 // Modal style for overlays (help, schema)
 var modalStyle = lipgloss.NewStyle().
